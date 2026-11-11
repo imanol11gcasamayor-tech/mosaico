@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fotos">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Mosaico</title>
+<style>
+:root{--bg:#fff;--fg:#111;--card:#f2f2f5;--ac:#6c3cf0}
+@media(prefers-color-scheme:dark){:root{--bg:#0e0e12;--fg:#f2f2f5;--card:#1c1c24}}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom))}
+h1{font-size:22px;margin:0 0 12px}
+.card{background:var(--card);border-radius:14px;padding:12px;margin-bottom:12px}
+label.b,button{display:block;width:100%;padding:12px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-size:16px;text-align:center;margin-top:8px}
+.s{background:transparent!important;color:var(--ac)!important;border:1.5px solid var(--ac)!important}
+input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid #8885;font-size:16px;background:var(--bg);color:var(--fg)}
+input[type=file]{display:none}
+input[type=range]{width:100%}
+small{opacity:.7}
+#prev{max-width:90px;border-radius:8px;margin-top:8px;display:none}
+#sugwrap{position:relative}
+#sug{display:none;position:absolute;left:0;right:0;top:100%;z-index:5;background:var(--bg);border:1px solid #8885;border-radius:10px;max-height:50vh;overflow:auto;box-shadow:0 8px 24px #0004}
+.it{display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #8883}
+.it img{width:40px;height:40px;object-fit:cover;border-radius:50%;flex:none}
+.it small{display:block}
+#res{display:none}
+#gal{display:none;position:fixed;inset:0;background:#000;z-index:10;flex-direction:column;color:#fff;touch-action:none;overscroll-behavior:none}
+#gal.on{display:flex}
+#bar{padding:max(10px,env(safe-area-inset-top)) 14px 10px;display:flex;justify-content:space-between;align-items:center}
+#bar button{width:auto;margin:0;background:none;padding:6px;color:#4da3ff}
+#box{flex:1;position:relative;overflow:hidden;touch-action:none}
+#gc{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+#zbar{padding:10px 20px max(14px,env(safe-area-inset-bottom));opacity:.45}
+</style>
+</head>
+<body>
+<h1>📸 Mosaico mágico</h1>
+
+<div class="card">
+  <b>1. Famoso</b>
+  <div id="sugwrap">
+    <input type="text" id="name" placeholder="Escribe un nombre… ej: Cris" autocapitalize="words" autocomplete="off">
+    <div id="sug"></div>
+  </div>
+  <button id="search">Buscar foto</button>
+  <label class="b s" for="manual">…o elegir su foto de mi galería</label>
+  <input type="file" id="manual" accept="image/*">
+  <img id="prev" alt="">
+  <div><small id="st1"></small></div>
+</div>
+
+<div class="card">
+  <b>2. Mis fotos</b><br><small>Se guardan en este iPhone: solo las subes una vez. Cuantas más, mejor (300+).</small>
+  <label class="b" for="pics">Añadir fotos</label>
+  <input type="file" id="pics" accept="image/*" multiple>
+  <div><small id="st2">0 fotos guardadas</small></div>
+  <button class="s" id="clear" style="padding:8px;font-size:14px">Borrar todas mis fotos guardadas</button>
+</div>
+
+<div class="card">
+  <b>3. Ajustes</b><br>
+  <small>Detalle (columnas): <span id="v1">40</span></small>
+  <input type="range" id="cols" min="20" max="80" value="40">
+  <small>Intensidad del rostro al alejar: <span id="v2">60</span>%</small>
+  <input type="range" id="tint" min="20" max="90" value="60">
+  <button id="go">Crear mosaico</button>
+  <div><small id="st3"></small></div>
+</div>
+
+<div class="card" id="res">
+  <button id="open">Abrir mi “galería”</button>
+  <button class="s" id="save">Guardar imagen / compartir</button>
+  <small>En la galería empiezas viendo fotos tuyas normales. Pellizca para alejar y aparece el famoso.</small>
+</div>
+
+<div id="gal">
+  <div id="bar"><button id="close">‹ Cerrar</button><b>Recientes</b><span style="width:60px"></span></div>
+  <div id="box"><canvas id="gc"></canvas></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const T=96;
+let target=null,lib=[],cols=40,rows=0,cellPx=0,fit=1,z=1,zmax=2,tx=0,ty=0;
+const gc=$('gc'),box=$('box');
+
+const loadImg=(src,cors)=>new Promise((ok,ko)=>{const i=new Image();if(cors)i.crossOrigin='anonymous';i.onload=()=>ok(i);i.onerror=ko;i.src=src;});
+const bmp=async b=>{try{return await createImageBitmap(b);}catch(_){return loadImg(URL.createObjectURL(b));}};
+const nextFrame=()=>new Promise(r=>setTimeout(r,0));
+
+/* ---------- Almacenamiento (IndexedDB) ---------- */
+const dbp=new Promise((ok,ko)=>{try{const r=indexedDB.open('mosaico',1);r.onupgradeneeded=()=>r.result.createObjectStore('fotos',{keyPath:'key'});r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error);}catch(e){ko(e);}});
+const dbDo=(mode,fn)=>dbp.then(db=>new Promise((ok,ko)=>{const t=db.transaction('fotos',mode);const r=fn(t.objectStore('fotos'));t.oncomplete=()=>ok(r&&r.result);t.onerror=()=>ko(t.error);}));
+let mode='mem',cch=null,e1='';
+const upd=()=>$('st2').textContent=lib.length+(mode=='mem'?' fotos cargadas (no se guardarán al cerrar la app)':' fotos guardadas en este iPhone');
+async function initStore(){
+  try{lib=(await dbDo('readonly',s=>s.getAll()))||[];mode='idb';upd();return;}catch(x){e1=(x&&x.name)||String(x);}
+  try{
+    cch=await caches.open('mosaico');
+    for(const k of await cch.keys()){const r=await cch.match(k);lib.push({key:decodeURIComponent(k.url.split('/_f/')[1]),blob:await r.blob(),col:JSON.parse(r.headers.get('x-col'))});}
+    mode='cache';upd();return;
+  }catch(x){}
+  mode='mem';
+  $('st2').textContent=`Aviso: aquí no se pueden guardar fotos (${e1}). Puedes usar la app, pero tendrás que añadir las fotos cada vez. Prueba fuera de pestaña privada.`;
+}
+async function saveRec(rec){
+  if(mode=='idb')await dbDo('readwrite',s=>s.put(rec));
+  else if(mode=='cache')await cch.put(new Request(location.origin+'/_f/'+encodeURIComponent(rec.key)),new Response(rec.blob,{headers:{'x-col':JSON.stringify(rec.col)}}));
+}
+async function clearStore(){
+  if(mode=='idb')await dbDo('readwrite',s=>s.clear());
+  else if(mode=='cache'){await caches.delete('mosaico');cch=await caches.open('mosaico');}
+}
+initStore();
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+
+async function thumb(f){
+  const src=await bmp(f);
+  const w=src.width||src.naturalWidth,h=src.height||src.naturalHeight,s=Math.min(w,h);
+  const c=document.createElement('canvas');c.width=c.height=T;
+  c.getContext('2d').drawImage(src,(w-s)/2,(h-s)/2,s,s,0,0,T,T);
+  if(src.close)src.close();
+  const m=document.createElement('canvas');m.width=m.height=8;
+  const mx=m.getContext('2d');mx.drawImage(c,0,0,8,8);
+  const d=mx.getImageData(0,0,8,8).data;let r=0,g=0,b=0;
+  for(let i=0;i<256;i+=4){r+=d[i];g+=d[i+1];b+=d[i+2];}
+  const blob=await new Promise(ok=>c.toBlob(ok,'image/jpeg',.82));
+  return {blob,col:[r/64,g/64,b/64]};
+}
+
+$('pics').onchange=async e=>{
+  const fs=[...e.target.files];const have=new Set(lib.map(r=>r.key));
+  let add=0,dup=0,bad=0,dbBad=0,err='';
+  for(let i=0;i<fs.length;i++){
+    const f=fs[i];
+    $('st2').textContent=`Procesando ${i+1}/${fs.length}…`;await nextFrame();
+    try{
+      const t=await thumb(f);
+      if(!t.blob)throw new Error('no se pudo reducir la foto');
+      const key=f.name+'|'+f.size+'|'+f.lastModified+'|'+t.col.map(Math.round).join(',');
+      if(have.has(key)){dup++;continue;}
+      const rec={key,blob:t.blob,col:t.col};
+      lib.push(rec);have.add(key);add++;
+      try{await saveRec(rec);}catch(_){dbBad++;}
+    }catch(ex){bad++;if(!err)err=(ex&&ex.message)||'formato no compatible';}
+  }
+  e.target.value='';upd();
+  let m=`Añadidas ${add}`;
+  if(dup)m+=`, repetidas ${dup}`;
+  if(bad)m+=`, fallidas ${bad} (${err})`;
+  if(dbBad)m+=`. OJO: ${dbBad} no se pudieron guardar para la próxima vez`;
+  $('st3').textContent=m;
+};
+$('clear').onclick=async()=>{
+  if(!confirm('¿Borrar todas las fotos guardadas?'))return;
+  lib=[];try{await clearStore();}catch(_){}upd();
+};
+
+/* ---------- Buscador con sugerencias ---------- */
+const enc=encodeURIComponent;
+async function api(lang,mode,q){
+  const g=mode=='p'?`generator=prefixsearch&gpssearch=${enc(q)}&gpslimit=6`:`generator=search&gsrsearch=${enc(q)}&gsrlimit=6`;
+  try{
+    const r=await (await fetch(`https://${lang}.wikipedia.org/w/api.php?action=query&${g}&prop=pageimages%7Cdescription&piprop=thumbnail&pithumbsize=500&format=json&origin=*`)).json();
+    return Object.values((r.query||{}).pages||{}).filter(p=>p.thumbnail).sort((a,b)=>a.index-b.index)
+      .map(p=>({title:p.title,desc:p.description||'',img:p.thumbnail.source}));
+  }catch(_){return [];}
+}
+async function find(q){
+  const all=(await Promise.all([api('es','p',q),api('en','p',q),api('es','s',q),api('en','s',q)])).flat();
+  const seen=new Set();return all.filter(o=>!seen.has(o.img)&&seen.add(o.img)).slice(0,8);
+}
+let tmr,seq=0,last=[];
+function show(list){
+  const s=$('sug');s.textContent='';
+  list.forEach(o=>{
+    const d=document.createElement('div');d.className='it';
+    const im=document.createElement('img');im.src=o.img;
+    const sp=document.createElement('span');
+    const b=document.createElement('b');b.textContent=o.title;
+    const sm=document.createElement('small');sm.textContent=o.desc;
+    sp.append(b,sm);d.append(im,sp);d.onclick=()=>pick(o);s.append(d);
+  });
+  s.style.display=list.length?'block':'none';
+}
+$('name').oninput=()=>{
+  clearTimeout(tmr);last=[];const q=$('name').value.trim();
+  if(q.length<2){show([]);return;}
+  tmr=setTimeout(async()=>{const my=++seq;const l=await find(q);if(my!==seq)return;last=l;show(l);},300);
+};
+document.addEventListener('click',e=>{if(!e.target.closest('#sugwrap'))show([]);});
+
+function setTarget(img){target=img;$('prev').src=img.src;$('prev').style.display='block';}
+async function pick(o){
+  show([]);$('name').value=o.title;$('st1').textContent='Cargando foto…';
+  try{setTarget(await loadImg(o.img,true));$('st1').textContent=o.title+' ✔';}
+  catch(_){$('st1').textContent='No se pudo cargar esa foto. Prueba otra o elígela de tu galería.';}
+}
+$('search').onclick=async()=>{
+  const q=$('name').value.trim();if(!q)return;
+  $('st1').textContent='Buscando…';
+  const l=last.length?last:await find(q);
+  if(!l.length){$('st1').textContent='No encontré foto. Elígela de tu galería.';return;}
+  pick(l[0]);
+};
+$('manual').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  setTarget(await loadImg(URL.createObjectURL(f)));$('st1').textContent='Foto elegida ✔';
+};
+
+/* ---------- Ajustes ---------- */
+$('cols').oninput=e=>$('v1').textContent=e.target.value;
+$('tint').oninput=e=>{$('v2').textContent=e.target.value;updOv();};
+
+/* ---------- Crear mosaico ---------- */
+let N=0,assign=null,cstr=[],bm=[],sp=[];const MINC=3;
+$('go').onclick=async()=>{
+  if(!target){$('st3').textContent='Falta la foto del famoso.';return;}
+  if(lib.length<10){$('st3').textContent='Añade al menos 10 fotos (mejor 300+).';return;}
+  cols=+$('cols').value;rows=Math.max(1,Math.round(cols*target.naturalHeight/target.naturalWidth));
+  $('st3').textContent='Preparando fotos…';await nextFrame();
+  bm.forEach(b=>b.close&&b.close());
+  bm=await Promise.all(lib.map(r=>bmp(r.blob)));
+  sp=bm.map(b=>{const c=document.createElement('canvas');c.width=c.height=32;c.getContext('2d').drawImage(b,0,0,32,32);return c;});
+
+  const sm=document.createElement('canvas');sm.width=cols;sm.height=rows;
+  const sx=sm.getContext('2d');sx.fillStyle='#fff';sx.fillRect(0,0,cols,rows);
+  sx.drawImage(target,0,0,cols,rows);
+  const px=sx.getImageData(0,0,cols,rows).data;
+
+  N=cols*rows;assign=new Uint16Array(N);cstr=new Array(N);
+  const used=new Array(lib.length).fill(0);
+  const order=[...Array(N).keys()].sort(()=>Math.random()-.5);
+  const pen=(N/lib.length)*500;
+  let n=0;
+  for(const k of order){
+    const r=px[k*4],g=px[k*4+1],b=px[k*4+2];
+    cstr[k]=`rgb(${r},${g},${b})`;
+    let best=0,bs=1e15;
+    for(let j=0;j<lib.length;j++){
+      const c=lib[j].col,dr=c[0]-r,dg=c[1]-g,db=c[2]-b;
+      const q=dr*dr+dg*dg+db*db+used[j]*pen;
+      if(q<bs){bs=q;best=j;}
+    }
+    used[best]++;assign[k]=best;
+    if(++n%500==0){$('st3').textContent=`Montando ${Math.round(n/N*100)}%`;await nextFrame();}
+  }
+  $('st3').textContent='Listo ✔';$('res').style.display='block';
+  openGal();
+};
+
+/* ---------- Galería estilo iPhone ---------- */
+const ctx=gc.getContext('2d');
+let W=0,H=0,dpr=1,cc=4,sy=0,vy=0,raf=0,snap=null,mom=false,lastT=0;
+let n1=4,n2=4,tt=0,s1=0,s2=0,hh=0,base=0;
+const lerp=(a,b,t)=>a+(b-a)*t;
+function size(){dpr=Math.min(3,window.devicePixelRatio||1);W=box.clientWidth;H=box.clientHeight;gc.width=Math.round(W*dpr);gc.height=Math.round(H*dpr);}
+function layout(){
+  n1=Math.max(MINC,Math.floor(cc+1e-6));n2=Math.min(cols,n1+1);tt=n2==n1?0:cc-n1;if(tt<1e-4)tt=0;
+  s1=W/n1;s2=W/n2;
+  hh=lerp(Math.ceil(N/n1)*s1,Math.ceil(N/n2)*s2,tt);base=hh<H?(H-hh)/2:0;
+}
+function clampScroll(){sy=Math.max(0,Math.min(Math.max(0,hh-H),sy));}
+function posOf(i){
+  const y1=Math.floor(i/n1)*s1;if(!tt)return{y:y1,s:s1};
+  return{y:lerp(y1,Math.floor(i/n2)*s2,tt),s:lerp(s1,s2,tt)};
+}
+function anchorAt(fx,fy){
+  layout();const n=tt<.5?n1:n2,s=W/n,y=fy-base+sy,row=Math.floor(y/s);
+  const col=Math.min(n-1,Math.max(0,Math.floor(fx/s)));
+  return{idx:Math.max(0,Math.min(N-1,row*n+col)),v:y/s-row,fy};
+}
+function setCC(v,a){
+  cc=Math.max(MINC,Math.min(cols,v));layout();
+  if(a){const p=posOf(a.idx);sy=p.y+a.v*p.s+base-a.fy;}
+  clampScroll();
+}
+function snapTarget(c){return c>=cols-Math.max(3,cols*.1)?cols:Math.max(MINC,Math.min(cols,Math.round(c)));}
+
+function draw(){
+  layout();clampScroll();
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+  const top=sy-base,bot=top+H;
+  let i0=Math.max(0,(Math.floor(top/s1)-1)*n1),i1=Math.min(N,(Math.ceil(bot/s1)+2)*n1);
+  if(tt){i0=Math.max(0,Math.min(i0,(Math.floor(top/s2)-1)*n2));i1=Math.min(N,Math.max(i1,(Math.ceil(bot/s2)+2)*n2));}
+  const sz=lerp(s1,s2,tt),g=Math.min(2,sz*.04),big=sz*dpr>36;
+  const k=Math.max(0,Math.min(1,(cc-.5*cols)/(.45*cols))),op=k*k*(3-2*k)*$('tint').value/100;
+  const bot2=sy-base;
+  for(let i=i0;i<i1;i++){
+    let x=(i%n1)*s1,y=Math.floor(i/n1)*s1;
+    if(tt){x=lerp(x,(i%n2)*s2,tt);y=lerp(y,Math.floor(i/n2)*s2,tt);}
+    y-=bot2;if(y>H||y+sz<0)continue;
+    ctx.drawImage(big?bm[assign[i]]:sp[assign[i]],x+g/2,y+g/2,sz-g,sz-g);
+    if(op>.01){ctx.globalAlpha=op;ctx.fillStyle=cstr[i];ctx.fillRect(x+g/2,y+g/2,sz-g,sz-g);ctx.globalAlpha=1;}
+  }
+}
+function rq(){if(!raf)raf=requestAnimationFrame(frame);}
+function updOv(){rq();}
+function frame(t){
+  raf=0;const dt=Math.min(50,t-(lastT||t));lastT=t;let more=false;
+  if(snap){
+    const p=Math.min(1,(t-snap.t0)/snap.d),e=1-Math.pow(1-p,3);
+    setCC(lerp(snap.from,snap.to,e),snap.a);
+    if(p<1)more=true;else snap=null;
+  }
+  if(mom){
+    sy+=vy*dt;vy*=Math.exp(-dt/325);layout();
+    const mx=Math.max(0,hh-H);
+    if(sy<0||sy>mx){sy=Math.max(0,Math.min(mx,sy));vy=0;}
+    if(Math.abs(vy)<.02)mom=false;else more=true;
+  }
+  draw();
+  if(more)rq();else lastT=0;
+}
+function openGal(){
+  $('gal').classList.add('on');size();
+  mom=false;snap=null;vy=0;cc=Math.min(cols,4);layout();sy=hh-H;clampScroll();rq();
+}
+$('open').onclick=openGal;
+$('close').onclick=()=>$('gal').classList.remove('on');
+window.addEventListener('resize',()=>{if($('gal').classList.contains('on')){size();rq();}});
+['gesturestart','gesturechange','gestureend'].forEach(t=>document.addEventListener(t,e=>e.preventDefault()));
+
+const ptr=new Map();let pin=null,lastMv=0;
+box.addEventListener('pointerdown',e=>{
+  box.setPointerCapture(e.pointerId);ptr.set(e.pointerId,[e.clientX,e.clientY]);
+  mom=false;vy=0;snap=null;lastMv=performance.now();
+  if(ptr.size==2){
+    const [p,q]=[...ptr.values()],r=box.getBoundingClientRect();
+    pin={d0:Math.hypot(p[0]-q[0],p[1]-q[1])||1,cc0:cc,a:anchorAt((p[0]+q[0])/2-r.left,(p[1]+q[1])/2-r.top)};
+  }
+});
+box.addEventListener('pointermove',e=>{
+  if(!ptr.has(e.pointerId))return;
+  const o=ptr.get(e.pointerId);ptr.set(e.pointerId,[e.clientX,e.clientY]);
+  const now=performance.now(),dt=Math.max(1,now-lastMv);lastMv=now;
+  if(ptr.size==2&&pin){
+    const [p,q]=[...ptr.values()],r=box.getBoundingClientRect();
+    const d=Math.hypot(p[0]-q[0],p[1]-q[1]);
+    pin.a.fy=(p[1]+q[1])/2-r.top;
+    setCC(pin.cc0/(d/pin.d0),pin.a);rq();
+  }else if(ptr.size==1){
+    const dy=e.clientY-o[1];sy-=dy;clampScroll();vy=.7*vy+.3*(-dy/dt);rq();
+  }
+});
+const up=e=>{
+  if(!ptr.has(e.pointerId))return;ptr.delete(e.pointerId);
+  if(pin&&ptr.size<2){snap={from:cc,to:snapTarget(cc),t0:performance.now(),d:240,a:pin.a};pin=null;vy=0;rq();return;}
+  if(ptr.size==0&&Math.abs(vy)>.05&&performance.now()-lastMv<80){mom=true;rq();}
+};
+box.addEventListener('pointerup',up);box.addEventListener('pointercancel',up);
+box.addEventListener('wheel',e=>{
+  e.preventDefault();const r=box.getBoundingClientRect();snap=null;
+  if(e.ctrlKey)setCC(cc*Math.exp(e.deltaY*.01),anchorAt(e.clientX-r.left,e.clientY-r.top));
+  else{sy+=e.deltaY;clampScroll();}
+  rq();
+},{passive:false});
+
+/* ---------- Guardar ---------- */
+$('save').onclick=()=>{
+  const cell=Math.max(16,Math.min(96,Math.floor(Math.sqrt(9e6/N))));
+  const c=document.createElement('canvas');c.width=cols*cell;c.height=rows*cell;
+  const x=c.getContext('2d');x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);
+  const g=Math.max(1,Math.round(cell*.03)),al=+$('tint').value/100;
+  for(let i=0;i<N;i++){
+    const px=(i%cols)*cell+g,py=Math.floor(i/cols)*cell+g,w=cell-2*g;
+    x.drawImage(bm[assign[i]],px,py,w,w);
+    x.globalAlpha=al;x.fillStyle=cstr[i];x.fillRect(px,py,w,w);x.globalAlpha=1;
+  }
+  c.toBlob(async b=>{
+    const f=new File([b],'mosaico.png',{type:'image/png'});
+    if(navigator.canShare&&navigator.canShare({files:[f]})){try{await navigator.share({files:[f]});return;}catch(_){return;}}
+    const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='mosaico.png';a.click();
+  },'image/png');
+};
+</script>
+</body>
+</html>
